@@ -1,0 +1,8 @@
+/target/
+/*.exe.WebView2/
+*.pdb
+*.ilk
+*.log
+*.tmp
+Thumbs.db
+.DS_Store
