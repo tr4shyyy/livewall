@@ -1,11 +1,11 @@
 [package]
-name = "weebp-rs"
+name = "live-wall"
 version = "0.1.0"
 edition = "2024"
 license = "Unlicense"
 
 [[bin]]
-name = "weebp-rs"
+name = "live-wall"
 path = "app/src/main.rs"
 
 [dependencies]
@@ -29,6 +29,8 @@ features = [
     "Win32_System_ProcessStatus",
     "Win32_System_Threading",
     "Win32_UI_HiDpi",
+    "Win32_UI_Input",
+    "Win32_UI_Input_KeyboardAndMouse",
     "Win32_UI_Shell",
     "Win32_UI_WindowsAndMessaging",
 ]

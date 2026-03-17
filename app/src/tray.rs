@@ -1,5 +1,6 @@
+use std::path::Path;
 use std::ptr::null_mut;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, Ordering};
 
 use anyhow::{Context, Result, anyhow};
 use windows::core::{PCWSTR, w};
@@ -11,19 +12,33 @@ use windows::Win32::UI::Shell::{
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu, DestroyWindow,
-    GetCursorPos, HICON, IDI_APPLICATION, LoadIconW, MF_DISABLED, MF_GRAYED, MF_SEPARATOR,
-    MF_STRING, PostQuitMessage, RegisterClassW, SetForegroundWindow, TPM_BOTTOMALIGN,
-    TPM_LEFTALIGN, TPM_RIGHTBUTTON, TrackPopupMenu, WINDOW_EX_STYLE, WINDOW_STYLE, WM_APP,
-    WM_COMMAND, WM_CONTEXTMENU, WM_DESTROY, WM_LBUTTONUP, WM_RBUTTONUP, WNDCLASSW, WS_OVERLAPPED,
+    GetCursorPos, HICON, IDI_APPLICATION, IMAGE_ICON, LR_LOADFROMFILE, LoadIconW, LoadImageW,
+    MF_DISABLED, MF_GRAYED, MF_SEPARATOR, MF_STRING, PostQuitMessage, RegisterClassW,
+    SetForegroundWindow, TPM_BOTTOMALIGN, TPM_LEFTALIGN, TPM_RIGHTBUTTON, TrackPopupMenu,
+    WINDOW_EX_STYLE, WINDOW_STYLE, WM_APP, WM_COMMAND, WM_CONTEXTMENU, WM_DESTROY,
+    WM_LBUTTONUP, WM_RBUTTONUP, WNDCLASSW, WS_OVERLAPPED,
 };
+
+const APP_NAME: &str = "Live Wall";
 
 const TRAY_ICON_UID: u32 = 1;
 const WM_TRAYICON: u32 = WM_APP + 1;
 const IDM_STATUS: usize = 1001;
-const IDM_QUIT: usize = 1002;
+const IDM_CHOOSE_VIDEO: usize = 1002;
+const IDM_NEXT_VIDEO: usize = 1003;
+const IDM_EDIT_CONFIG: usize = 1004;
+const IDM_QUIT: usize = 1005;
 
-static QUIT_REQUESTED: AtomicBool = AtomicBool::new(false);
 static PLAYBACK_STATUS: AtomicU32 = AtomicU32::new(0);
+static PENDING_ACTION: AtomicU32 = AtomicU32::new(0);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TrayAction {
+    ChooseVideo,
+    NextVideo,
+    EditConfig,
+    Quit,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TrayPlaybackStatus {
@@ -43,9 +58,9 @@ impl TrayPlaybackStatus {
 
     fn as_tip(self) -> &'static str {
         match self {
-            Self::Running => "weebp-rs: running",
-            Self::PausedFullscreen => "weebp-rs: paused for fullscreen app",
-            Self::PausedWatchedProcess => "weebp-rs: paused for watched app",
+            Self::Running => "Live Wall: running",
+            Self::PausedFullscreen => "Live Wall: paused for fullscreen app",
+            Self::PausedWatchedProcess => "Live Wall: paused for watched app",
         }
     }
 
@@ -72,10 +87,10 @@ pub struct TrayIcon {
 
 impl TrayIcon {
     pub fn create() -> Result<Self> {
-        QUIT_REQUESTED.store(false, Ordering::SeqCst);
         PLAYBACK_STATUS.store(TrayPlaybackStatus::Running.into_raw(), Ordering::SeqCst);
+        PENDING_ACTION.store(0, Ordering::SeqCst);
 
-        let class_name = w!("WeebpRsTrayWindow");
+        let class_name = w!("LiveWallTrayWindow");
         let hinstance = unsafe { GetModuleHandleW(None) }.context("failed to get module handle")?;
 
         let wc = WNDCLASSW {
@@ -93,7 +108,7 @@ impl TrayIcon {
             CreateWindowExW(
                 WINDOW_EX_STYLE(0),
                 class_name,
-                w!("weebp-rs tray"),
+                w!("Live Wall tray"),
                 WINDOW_STYLE(WS_OVERLAPPED.0),
                 0,
                 0,
@@ -121,8 +136,14 @@ impl TrayIcon {
         Ok(())
     }
 
-    pub fn should_quit(&self) -> bool {
-        QUIT_REQUESTED.load(Ordering::SeqCst)
+    pub fn take_action(&self) -> Option<TrayAction> {
+        match PENDING_ACTION.swap(0, Ordering::SeqCst) {
+            1 => Some(TrayAction::ChooseVideo),
+            2 => Some(TrayAction::NextVideo),
+            3 => Some(TrayAction::EditConfig),
+            4 => Some(TrayAction::Quit),
+            _ => None,
+        }
     }
 
     fn install_icon(&self, status: TrayPlaybackStatus) -> Result<()> {
@@ -187,11 +208,23 @@ unsafe extern "system" fn tray_wndproc(
         }
         WM_COMMAND => {
             let command_id = wparam.0 & 0xffff;
-            if command_id == IDM_QUIT {
-                QUIT_REQUESTED.store(true, Ordering::SeqCst);
-                unsafe {
-                    PostQuitMessage(0);
+            match command_id {
+                IDM_CHOOSE_VIDEO => {
+                    PENDING_ACTION.store(1, Ordering::SeqCst);
                 }
+                IDM_NEXT_VIDEO => {
+                    PENDING_ACTION.store(2, Ordering::SeqCst);
+                }
+                IDM_EDIT_CONFIG => {
+                    PENDING_ACTION.store(3, Ordering::SeqCst);
+                }
+                IDM_QUIT => {
+                    PENDING_ACTION.store(4, Ordering::SeqCst);
+                    unsafe {
+                        PostQuitMessage(0);
+                    }
+                }
+                _ => {}
             }
             LRESULT(0)
         }
@@ -208,7 +241,10 @@ unsafe extern "system" fn tray_wndproc(
 fn show_context_menu(hwnd: HWND) -> Result<()> {
     let menu = unsafe { CreatePopupMenu() }.context("failed to create tray menu")?;
     let status = TrayPlaybackStatus::from_raw(PLAYBACK_STATUS.load(Ordering::SeqCst));
-    let status_text = wide_null(format!("Status: {}", status.as_label()));
+    let status_text = wide_null(format!("{APP_NAME}: {}", status.as_label()));
+    let choose_video_text = wide_null("Choose Video...");
+    let next_video_text = wide_null("Next Video");
+    let edit_config_text = wide_null("Edit Config");
     let quit_text = wide_null("Quit");
 
     unsafe {
@@ -219,6 +255,14 @@ fn show_context_menu(hwnd: HWND) -> Result<()> {
             PCWSTR(status_text.as_ptr()),
         )
         .context("failed to add tray status item")?;
+        AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null())
+            .context("failed to add tray separator")?;
+        AppendMenuW(menu, MF_STRING, IDM_CHOOSE_VIDEO, PCWSTR(choose_video_text.as_ptr()))
+            .context("failed to add choose video item")?;
+        AppendMenuW(menu, MF_STRING, IDM_NEXT_VIDEO, PCWSTR(next_video_text.as_ptr()))
+            .context("failed to add next video item")?;
+        AppendMenuW(menu, MF_STRING, IDM_EDIT_CONFIG, PCWSTR(edit_config_text.as_ptr()))
+            .context("failed to add edit config item")?;
         AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null())
             .context("failed to add tray separator")?;
         AppendMenuW(menu, MF_STRING, IDM_QUIT, PCWSTR(quit_text.as_ptr()))
@@ -255,6 +299,29 @@ fn show_context_menu(hwnd: HWND) -> Result<()> {
 }
 
 fn load_default_icon() -> Result<HICON> {
+    for icon_path in [
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tray_icon.ico"),
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("icon.ico"),
+    ] {
+        if icon_path.exists() {
+            let wide_path = wide_null(icon_path.to_string_lossy());
+            unsafe {
+                if let Ok(handle) = LoadImageW(
+                    None,
+                    PCWSTR(wide_path.as_ptr()),
+                    IMAGE_ICON,
+                    0,
+                    0,
+                    LR_LOADFROMFILE,
+                ) {
+                    if !handle.is_invalid() {
+                        return Ok(HICON(handle.0));
+                    }
+                }
+            }
+        }
+    }
+
     unsafe { LoadIconW(None, IDI_APPLICATION) }.context("failed to load default tray icon")
 }
 

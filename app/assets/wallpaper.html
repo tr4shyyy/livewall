@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>weebp-rs</title>
+  <title>Live Wall</title>
   <style>
     :root {
       color-scheme: dark;
@@ -123,6 +123,34 @@
       backdrop-filter: blur(10px);
     }
 
+    .video-layer {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      left: -9999px;
+      top: -9999px;
+      opacity: 0;
+      pointer-events: none;
+    }
+
+    .canvas-layer {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      background: #000;
+    }
+
+    body.has-video::before,
+    body.has-video .orb,
+    body.has-video .panel {
+      display: none;
+    }
+
+    body.paused .canvas-layer {
+      filter: saturate(0.72) brightness(0.82);
+    }
+
     @keyframes float {
       from { transform: translate3d(-1rem, 0.4rem, 0) scale(0.98); }
       to { transform: translate3d(1.4rem, -1rem, 0) scale(1.04); }
@@ -136,18 +164,235 @@
 </head>
 <body>
   <div class="status" id="status">Playing</div>
+  <canvas class="canvas-layer" id="video-canvas" hidden></canvas>
+  <video class="video-layer" id="video-a" muted playsinline preload="auto" hidden></video>
+  <video class="video-layer" id="video-b" muted playsinline preload="auto" hidden></video>
   <div class="orb one"></div>
   <div class="orb two"></div>
   <section class="panel">
-    <div class="eyebrow">weebp-rs</div>
+    <div class="eyebrow">Live Wall</div>
     <h1>Wallpaper host online.</h1>
     <p>Point the config at any local or remote HTML scene. Playback will pause automatically while a fullscreen app or a watched executable is active.</p>
   </section>
   <script>
     const status = document.getElementById("status");
-    window.weebpSetPaused = (paused) => {
+    const canvas = document.getElementById("video-canvas");
+    const context = canvas.getContext("2d", { alpha: false });
+    const videos = [
+      document.getElementById("video-a"),
+      document.getElementById("video-b"),
+    ];
+    const params = new URLSearchParams(window.location.search);
+    const videoUrl = params.get("video");
+    let isPaused = false;
+    let activeIndex = 0;
+    let swapTimer = null;
+    let started = false;
+    let drawHandle = 0;
+
+    function activeVideo() {
+      return videos[activeIndex];
+    }
+
+    function standbyVideo() {
+      return videos[(activeIndex + 1) % videos.length];
+    }
+
+    function clearSwapTimer() {
+      if (swapTimer !== null) {
+        clearTimeout(swapTimer);
+        swapTimer = null;
+      }
+    }
+
+    function resizeCanvas() {
+      const dpr = window.devicePixelRatio || 1;
+      const width = Math.max(Math.round(window.innerWidth * dpr), 1);
+      const height = Math.max(Math.round(window.innerHeight * dpr), 1);
+      if (canvas.width !== width || canvas.height !== height) {
+        canvas.width = width;
+        canvas.height = height;
+      }
+    }
+
+    function drawVideoFrame(video) {
+      if (!video.videoWidth || !video.videoHeight) {
+        return;
+      }
+
+      resizeCanvas();
+      const destinationWidth = canvas.width;
+      const destinationHeight = canvas.height;
+      const sourceAspect = video.videoWidth / video.videoHeight;
+      const destinationAspect = destinationWidth / destinationHeight;
+
+      let drawWidth = destinationWidth;
+      let drawHeight = destinationHeight;
+      let drawX = 0;
+      let drawY = 0;
+
+      if (sourceAspect > destinationAspect) {
+        drawHeight = destinationHeight;
+        drawWidth = drawHeight * sourceAspect;
+        drawX = (destinationWidth - drawWidth) / 2;
+      } else {
+        drawWidth = destinationWidth;
+        drawHeight = drawWidth / sourceAspect;
+        drawY = (destinationHeight - drawHeight) / 2;
+      }
+
+      context.drawImage(video, drawX, drawY, drawWidth, drawHeight);
+    }
+
+    function renderLoop() {
+      drawHandle = requestAnimationFrame(renderLoop);
+      if (!started) {
+        return;
+      }
+
+      const video = activeVideo();
+      if (video.readyState >= 2) {
+        drawVideoFrame(video);
+      }
+    }
+
+    function waitForPresentedFrame(video) {
+      return new Promise((resolve) => {
+        if (typeof video.requestVideoFrameCallback === "function") {
+          video.requestVideoFrameCallback(() => resolve());
+          return;
+        }
+
+        requestAnimationFrame(() => resolve());
+      });
+    }
+
+    function scheduleSwap() {
+      clearSwapTimer();
+      const current = activeVideo();
+      if (!Number.isFinite(current.duration) || current.duration <= 0) {
+        return;
+      }
+
+      const remainingMs = Math.max((current.duration - current.currentTime - 0.12) * 1000, 0);
+      swapTimer = window.setTimeout(() => {
+        void swapVideos();
+      }, remainingMs);
+    }
+
+    async function primeVideo(video) {
+      video.autoplay = false;
+      video.defaultMuted = true;
+      video.muted = true;
+      video.hidden = false;
+      video.src = videoUrl;
+      video.load();
+
+      await new Promise((resolve, reject) => {
+        const onCanPlay = () => {
+          cleanup();
+          resolve();
+        };
+        const onError = () => {
+          cleanup();
+          reject(video.error);
+        };
+        const cleanup = () => {
+          video.removeEventListener("canplay", onCanPlay);
+          video.removeEventListener("error", onError);
+        };
+        video.addEventListener("canplay", onCanPlay);
+        video.addEventListener("error", onError);
+      });
+
+      video.currentTime = 0.001;
+    }
+
+    async function syncPlayback() {
+      if (!videoUrl) {
+        return;
+      }
+
+      if (isPaused) {
+        clearSwapTimer();
+        for (const video of videos) {
+          video.pause();
+        }
+        return;
+      }
+
+      try {
+        await activeVideo().play();
+        scheduleSwap();
+      } catch (error) {
+        status.textContent = "Playback blocked";
+        console.error(error);
+      }
+    }
+
+    async function swapVideos() {
+      if (isPaused || !videoUrl) {
+        return;
+      }
+
+      const current = activeVideo();
+      const next = standbyVideo();
+
+      try {
+        next.currentTime = 0.001;
+        await next.play();
+        await waitForPresentedFrame(next);
+        current.pause();
+        activeIndex = (activeIndex + 1) % videos.length;
+        drawVideoFrame(activeVideo());
+        scheduleSwap();
+      } catch (error) {
+        status.textContent = "Loop glitch";
+        console.error(error);
+      }
+    }
+
+    if (videoUrl) {
+      document.body.classList.add("has-video");
+      for (const video of videos) {
+        video.addEventListener("error", () => {
+          const mediaError = video.error;
+          status.textContent = mediaError ? `Video error ${mediaError.code}` : "Video error";
+        });
+      }
+
+      (async () => {
+        try {
+          await Promise.all(videos.map((video) => primeVideo(video)));
+          canvas.hidden = false;
+          drawVideoFrame(activeVideo());
+          started = true;
+          if (!drawHandle) {
+            renderLoop();
+          }
+          await syncPlayback();
+        } catch (error) {
+          const mediaError = activeVideo().error || standbyVideo().error;
+          status.textContent = mediaError ? `Video error ${mediaError.code}` : "Video error";
+          console.error(error);
+        }
+      })();
+    }
+
+    window.addEventListener("resize", () => {
+      resizeCanvas();
+      if (started) {
+        drawVideoFrame(activeVideo());
+      }
+    });
+
+    window.liveWallSetPaused = (paused) => {
+      isPaused = paused;
       document.body.classList.toggle("paused", paused);
       status.textContent = paused ? "Paused" : "Playing";
+      if (started) {
+        syncPlayback();
+      }
     };
   </script>
 </body>

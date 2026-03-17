@@ -2,6 +2,8 @@ use std::ptr::null_mut;
 use std::sync::mpsc;
 
 use anyhow::{Context, Result, anyhow};
+use crate::config::local_video_path_from_wallpaper_url;
+use crate::mpv::MpvPlayer;
 use webview2_com::Microsoft::Web::WebView2::Win32::{
     CreateCoreWebView2Environment, ICoreWebView2, ICoreWebView2Controller,
 };
@@ -16,6 +18,7 @@ use windows::Win32::Graphics::Gdi::{
 };
 use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows::Win32::UI::Input::KeyboardAndMouse::EnableWindow;
 use windows::Win32::UI::HiDpi::{
     DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetProcessDpiAwarenessContext,
 };
@@ -23,15 +26,23 @@ use windows::Win32::UI::WindowsAndMessaging::{
     CS_HREDRAW, CS_VREDRAW, CreateWindowExW, DefWindowProcW, DispatchMessageW, EnumWindows,
     FindWindowExW, FindWindowW, GetClientRect, HMENU, MSG, PostQuitMessage, RegisterClassW,
     SEND_MESSAGE_TIMEOUT_FLAGS, SW_SHOW, SendMessageTimeoutW, SetParent, ShowWindow,
-    TranslateMessage, WINDOW_EX_STYLE, WNDCLASSW, WM_DESTROY, WS_CHILD, WS_CLIPCHILDREN,
-    WS_CLIPSIBLINGS, WS_VISIBLE, PM_REMOVE,
+    TranslateMessage, WINDOW_EX_STYLE, WNDCLASSW, WM_DESTROY, WM_MOUSEACTIVATE,
+    WM_NCHITTEST, WS_CHILD, WS_CLIPCHILDREN, WS_CLIPSIBLINGS, WS_VISIBLE, HTTRANSPARENT,
+    MA_NOACTIVATE, PM_REMOVE,
 };
 use windows::core::{PCWSTR, w};
 
 pub struct WallpaperApp {
     hwnd: HWND,
-    webview: ICoreWebView2,
-    controller: ICoreWebView2Controller,
+    backend: Backend,
+}
+
+enum Backend {
+    WebView {
+        webview: ICoreWebView2,
+        controller: ICoreWebView2Controller,
+    },
+    Mpv(MpvPlayer),
 }
 
 impl WallpaperApp {
@@ -45,53 +56,88 @@ impl WallpaperApp {
 
         let worker = ensure_worker_window().context("failed to locate WorkerW host")?;
         let hwnd = create_host_window(worker).context("failed to create wallpaper host window")?;
-        let (webview, controller) = create_webview(hwnd, wallpaper_url)?;
-
-        Ok(Self {
-            hwnd,
-            webview,
-            controller,
-        })
-    }
-
-    pub fn set_paused(&self, paused: bool) -> Result<()> {
-        let script = if paused {
-            "window.weebpSetPaused?.(true); document.body?.classList.add('paused');"
+        let backend = if let Some(video_path) = local_video_path_from_wallpaper_url(wallpaper_url) {
+            Backend::Mpv(MpvPlayer::create(hwnd, &video_path)?)
         } else {
-            "window.weebpSetPaused?.(false); document.body?.classList.remove('paused');"
+            let (webview, controller) = create_webview(hwnd, wallpaper_url)?;
+            Backend::WebView { webview, controller }
         };
 
-        let js = CoTaskMemPWSTR::from(script);
-        ExecuteScriptCompletedHandler::wait_for_async_operation(
-            Box::new({
-                let webview = self.webview.clone();
-                move |handler| unsafe {
-                    webview
-                        .ExecuteScript(*js.as_ref().as_pcwstr(), &handler)
-                        .map_err(webview2_com::Error::WindowsError)
-                }
-            }),
-            Box::new(|error_code, _result| error_code),
-        )
-        .map_err(|err| anyhow!(err.to_string()))
-        .context("failed to send pause command to webview")?;
-        Ok(())
+        Ok(Self { hwnd, backend })
+    }
+
+    pub fn set_paused(&mut self, paused: bool) -> Result<()> {
+        match &mut self.backend {
+            Backend::Mpv(player) => player.set_paused(paused),
+            Backend::WebView { webview, .. } => {
+                let script = if paused {
+                    "window.liveWallSetPaused?.(true); document.body?.classList.add('paused');"
+                } else {
+                    "window.liveWallSetPaused?.(false); document.body?.classList.remove('paused');"
+                };
+
+                let js = CoTaskMemPWSTR::from(script);
+                ExecuteScriptCompletedHandler::wait_for_async_operation(
+                    Box::new({
+                        let webview = webview.clone();
+                        move |handler| unsafe {
+                            webview
+                                .ExecuteScript(*js.as_ref().as_pcwstr(), &handler)
+                                .map_err(webview2_com::Error::WindowsError)
+                        }
+                    }),
+                    Box::new(|error_code, _result| error_code),
+                )
+                .map_err(|err| anyhow!(err.to_string()))
+                .context("failed to send pause command to webview")?;
+                Ok(())
+            }
+        }
     }
 
     pub fn resize_to_parent(&self) -> Result<()> {
-        let bounds = client_rect(self.hwnd)?;
-        unsafe {
-            self.controller
-                .SetBounds(bounds)
-                .ok()
-                .context("failed to resize WebView2 controller")?;
+        if let Backend::WebView { controller, .. } = &self.backend {
+            let bounds = client_rect(self.hwnd)?;
+            unsafe {
+                controller
+                    .SetBounds(bounds)
+                    .ok()
+                    .context("failed to resize WebView2 controller")?;
+            }
         }
         Ok(())
     }
 
-    pub fn message_loop<F>(&self, mut tick: F) -> Result<()>
+    pub fn navigate(&mut self, url: &str) -> Result<()> {
+        match &mut self.backend {
+            Backend::Mpv(player) => {
+                if let Some(video_path) = local_video_path_from_wallpaper_url(url) {
+                    player.load_file(&video_path)
+                } else {
+                    Err(anyhow!("current backend is mpv but URL is not a local video"))
+                }
+            }
+            Backend::WebView { webview, .. } => {
+                let url = CoTaskMemPWSTR::from(url);
+                unsafe {
+                    webview
+                        .Navigate(*url.as_ref().as_pcwstr())
+                        .context("failed to navigate wallpaper URL")?;
+                }
+                Ok(())
+            }
+        }
+    }
+
+    pub fn refresh_input_passthrough(&self) {
+        if let Backend::Mpv(player) = &self.backend {
+            player.refresh_input_passthrough();
+        }
+    }
+
+    pub fn message_loop<F>(&mut self, mut tick: F) -> Result<()>
     where
-        F: FnMut() -> Result<LoopFlow>,
+        F: FnMut(&mut Self) -> Result<LoopFlow>,
     {
         unsafe {
             let mut msg = MSG::default();
@@ -112,7 +158,7 @@ impl WallpaperApp {
                     DispatchMessageW(&msg);
                 }
 
-                match tick()? {
+                match tick(self)? {
                     LoopFlow::Continue => {}
                     LoopFlow::Exit => return Ok(()),
                 }
@@ -136,6 +182,8 @@ fn create_host_window(parent: HWND) -> Result<HWND> {
         lparam: LPARAM,
     ) -> LRESULT {
         match message {
+            WM_NCHITTEST => LRESULT(HTTRANSPARENT as isize),
+            WM_MOUSEACTIVATE => LRESULT(MA_NOACTIVATE as isize),
             WM_DESTROY => {
                 unsafe {
                     PostQuitMessage(0);
@@ -146,7 +194,7 @@ fn create_host_window(parent: HWND) -> Result<HWND> {
         }
     }
 
-    let class_name = w!("WeebpRsWallpaperHost");
+    let class_name = w!("LiveWallWallpaperHost");
     let hinstance = unsafe { GetModuleHandleW(None) }.context("failed to get module handle")?;
 
     let wc = WNDCLASSW {
@@ -167,7 +215,7 @@ fn create_host_window(parent: HWND) -> Result<HWND> {
         CreateWindowExW(
             WINDOW_EX_STYLE(0),
             class_name,
-            w!("weebp-rs"),
+            w!("live-wall"),
             WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN | WS_CLIPSIBLINGS,
             rect.left,
             rect.top,
@@ -183,6 +231,7 @@ fn create_host_window(parent: HWND) -> Result<HWND> {
 
     unsafe {
         let _ = SetParent(hwnd, Some(parent));
+        let _ = EnableWindow(hwnd, false);
         let _ = ShowWindow(hwnd, SW_SHOW);
     }
 
