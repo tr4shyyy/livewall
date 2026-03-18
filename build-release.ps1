@@ -1,7 +1,7 @@
 $ErrorActionPreference = "Stop"
 
 $ProjectRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
-$IconIco = Join-Path $ProjectRoot "icon.ico"
+$IconIco = Join-Path $ProjectRoot "tray_icon.ico"
 $IconRc = Join-Path $ProjectRoot "icon.rc"
 $IconRes = Join-Path $ProjectRoot "icon.res"
 $BuildTemp = Join-Path $ProjectRoot ".tmp-build"
@@ -16,7 +16,7 @@ if (-not (Test-Path $IconIco)) {
 
 if (-not (Test-Path $IconRc)) {
     @'
-1 ICON "icon.ico"
+1 ICON "tray_icon.ico"
 '@ | Set-Content -Encoding ASCII $IconRc
 }
 

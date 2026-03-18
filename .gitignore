@@ -9,7 +9,6 @@ Thumbs.db
 .DS_Store
 mpv-*/
 mpv-dev-*/
-*.mp4
 *.mkv
 *.webm
 *.mov
