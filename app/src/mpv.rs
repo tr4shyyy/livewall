@@ -1,5 +1,5 @@
 use std::ffi::OsStr;
-use std::fs::OpenOptions;
+use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -7,6 +7,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow};
+use crate::config;
 use windows::core::BOOL;
 use windows::Win32::Foundation::{HWND, LPARAM};
 use windows::Win32::UI::Input::KeyboardAndMouse::EnableWindow;
@@ -25,6 +26,7 @@ impl MpvPlayer {
         if !mpv_exe.exists() {
             return Err(anyhow!("failed to find mpv.exe in {}", runtime_dir.display()));
         }
+        let mpv_log = open_mpv_log_file()?;
 
         let ipc_pipe = format!(r"\\.\pipe\live-wall-mpv-{}", std::process::id());
         let wid = (host_hwnd.0 as usize).to_string();
@@ -33,7 +35,7 @@ impl MpvPlayer {
             .current_dir(&runtime_dir)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
+            .stderr(Stdio::from(mpv_log))
             .args([
                 "--no-config",
                 "--force-window=yes",
@@ -43,9 +45,9 @@ impl MpvPlayer {
                 "--mute=yes",
                 "--no-osc",
                 "--no-input-default-bindings",
-                "--hwdec=auto-safe",
+                "--hwdec=no",
                 "--profile=fast",
-                "--msg-level=all=no",
+                "--msg-level=all=info",
                 "--ontop=no",
                 &format!("--wid={wid}"),
                 &format!("--input-ipc-server={ipc_pipe}"),
@@ -145,6 +147,19 @@ fn find_file(root: &Path, file_name: &OsStr) -> Option<PathBuf> {
 
 fn json_escape(input: &str) -> String {
     input.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+fn open_mpv_log_file() -> Result<File> {
+    let dir = config::project_dirs()?.data_local_dir().join("logs");
+    std::fs::create_dir_all(&dir)
+        .with_context(|| format!("failed to create {}", dir.display()))?;
+
+    let path = dir.join("mpv.log");
+    OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .with_context(|| format!("failed to open {}", path.display()))
 }
 
 fn apply_click_through_to_children(host_hwnd: HWND) {
