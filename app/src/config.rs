@@ -11,6 +11,8 @@ use windows::Win32::Foundation::HWND;
 use windows::Win32::UI::Shell::ShellExecuteW;
 use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
 
+use crate::paths::app_root_dir;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
     pub wallpaper: WallpaperSource,
@@ -86,7 +88,7 @@ impl AppConfig {
                 pause_on_fullscreen: true,
                 watched_processes: vec![
                     WatchedProcess {
-                        process_name: "valorant.exe".to_string(),
+                        process_name: "VALORANT-Win64-Shipping.exe".to_string(),
                         match_mode: ProcessMatchMode::Exact,
                     },
                     WatchedProcess {
@@ -155,10 +157,7 @@ fn default_wallpaper_url() -> Result<String> {
 }
 
 fn wallpaper_page_url() -> Result<String> {
-    let asset = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("app")
-        .join("assets")
-        .join("wallpaper.html");
+    let asset = app_root_dir()?.join("wallpaper.html");
     let canonical = asset
         .canonicalize()
         .with_context(|| format!("failed to resolve {}", asset.display()))?;
@@ -204,7 +203,9 @@ fn is_video_path(path: &Path) -> bool {
 }
 
 pub fn playlist_directory() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("PLAYLIST")
+    app_root_dir()
+        .unwrap_or_else(|_| PathBuf::from("."))
+        .join("PLAYLIST")
 }
 
 pub fn playlist_urls_from_directory() -> Result<Vec<String>> {

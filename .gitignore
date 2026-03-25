@@ -1,4 +1,5 @@
 /target/
+/dist/
 /*.exe.WebView2/
 *.pdb
 *.ilk

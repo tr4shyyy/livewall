@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow};
 use crate::config;
+use crate::paths::app_root_dir;
 use windows::core::BOOL;
 use windows::Win32::Foundation::{HWND, LPARAM};
 use windows::Win32::UI::Input::KeyboardAndMouse::EnableWindow;
@@ -123,8 +124,8 @@ impl Drop for MpvPlayer {
 }
 
 fn find_runtime_dir() -> Result<PathBuf> {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
-    find_file(root, OsStr::new("mpv.exe"))
+    let root = app_root_dir()?;
+    find_file(&root, OsStr::new("mpv.exe"))
         .and_then(|path| path.parent().map(Path::to_path_buf))
         .ok_or_else(|| anyhow!("failed to find mpv.exe under {}", root.display()))
 }

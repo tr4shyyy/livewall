@@ -19,6 +19,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
     WM_LBUTTONUP, WM_RBUTTONUP, WNDCLASSW, WS_OVERLAPPED,
 };
 
+use crate::paths::app_root_dir;
+
 const APP_NAME: &str = "Live Wall";
 
 const TRAY_ICON_UID: u32 = 1;
@@ -299,10 +301,8 @@ fn show_context_menu(hwnd: HWND) -> Result<()> {
 }
 
 fn load_default_icon() -> Result<HICON> {
-    for icon_path in [
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("tray_icon.ico"),
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("icon.ico"),
-    ] {
+    let root = app_root_dir().unwrap_or_else(|_| Path::new(".").to_path_buf());
+    for icon_path in [root.join("tray_icon.ico"), root.join("icon.ico")] {
         if icon_path.exists() {
             let wide_path = wide_null(icon_path.to_string_lossy());
             unsafe {

@@ -25,10 +25,11 @@ use windows::Win32::UI::HiDpi::{
 use windows::Win32::UI::WindowsAndMessaging::{
     CS_HREDRAW, CS_VREDRAW, CreateWindowExW, DefWindowProcW, DispatchMessageW, EnumWindows,
     FindWindowExW, FindWindowW, GetClientRect, HMENU, MSG, PostQuitMessage, RegisterClassW,
-    SEND_MESSAGE_TIMEOUT_FLAGS, SW_SHOW, SendMessageTimeoutW, SetParent, ShowWindow,
+    SEND_MESSAGE_TIMEOUT_FLAGS, SW_SHOW, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
+    SendMessageTimeoutW, SetParent, SetWindowPos, ShowWindow,
     TranslateMessage, WINDOW_EX_STYLE, WNDCLASSW, WM_DESTROY, WM_MOUSEACTIVATE,
     WM_NCHITTEST, WS_CHILD, WS_CLIPCHILDREN, WS_CLIPSIBLINGS, WS_VISIBLE, HTTRANSPARENT,
-    MA_NOACTIVATE, PM_REMOVE,
+    HWND_BOTTOM, MA_NOACTIVATE, PM_REMOVE,
 };
 use windows::core::{PCWSTR, w};
 
@@ -54,8 +55,8 @@ impl WallpaperApp {
             let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
         }
 
-        let worker = ensure_worker_window().context("failed to locate WorkerW host")?;
-        let hwnd = create_host_window(worker).context("failed to create wallpaper host window")?;
+        let desktop_host = ensure_worker_window().context("failed to locate WorkerW host")?;
+        let hwnd = create_host_window(desktop_host).context("failed to create wallpaper host window")?;
         let backend = if let Some(video_path) = local_video_path_from_wallpaper_url(wallpaper_url) {
             Backend::Mpv(MpvPlayer::create(hwnd, &video_path)?)
         } else {
@@ -217,10 +218,10 @@ fn create_host_window(parent: HWND) -> Result<HWND> {
             class_name,
             w!("live-wall"),
             WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN | WS_CLIPSIBLINGS,
-            rect.left,
-            rect.top,
-            rect.right - rect.left,
-            rect.bottom - rect.top,
+            0,
+            0,
+            rect.right,
+            rect.bottom,
             Some(parent),
             Some(HMENU(null_mut())),
             Some(windows::Win32::Foundation::HINSTANCE(hinstance.0)),
@@ -231,6 +232,15 @@ fn create_host_window(parent: HWND) -> Result<HWND> {
 
     unsafe {
         let _ = SetParent(hwnd, Some(parent));
+        let _ = SetWindowPos(
+            hwnd,
+            Some(HWND_BOTTOM),
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+        );
         let _ = EnableWindow(hwnd, false);
         let _ = ShowWindow(hwnd, SW_SHOW);
     }
@@ -334,22 +344,35 @@ fn monitor_rect_for_window(hwnd: HWND) -> Result<RECT> {
 }
 
 fn ensure_worker_window() -> Result<HWND> {
+    struct DesktopHostState {
+        icons_host: HWND,
+        wallpaper_host: HWND,
+    }
+
     unsafe extern "system" fn enum_windows(hwnd: HWND, lparam: LPARAM) -> BOOL {
+        let state = unsafe { &mut *(lparam.0 as *mut DesktopHostState) };
         let shell_view = unsafe {
             FindWindowExW(Some(hwnd), None, w!("SHELLDLL_DefView"), PCWSTR::null())
                 .unwrap_or_default()
         };
 
         if !shell_view.is_invalid() {
+            state.icons_host = hwnd;
+            let worker = unsafe {
+                FindWindowExW(Some(hwnd), None, w!("WorkerW"), PCWSTR::null())
+                    .unwrap_or_default()
+            };
+            if !worker.is_invalid() {
+                state.wallpaper_host = worker;
+                return BOOL(0);
+            }
+
             let worker = unsafe {
                 FindWindowExW(None, Some(hwnd), w!("WorkerW"), PCWSTR::null())
                     .unwrap_or_default()
             };
             if !worker.is_invalid() {
-                let target = lparam.0 as *mut HWND;
-                unsafe {
-                    *target = worker;
-                }
+                state.wallpaper_host = worker;
                 return BOOL(0);
             }
         }
@@ -384,19 +407,22 @@ fn ensure_worker_window() -> Result<HWND> {
         );
     }
 
-    let mut worker = HWND(null_mut());
+    let mut state = DesktopHostState {
+        icons_host: HWND(null_mut()),
+        wallpaper_host: HWND(null_mut()),
+    };
     unsafe {
-        EnumWindows(
+        let _ = EnumWindows(
             Some(enum_windows),
-            LPARAM((&mut worker as *mut HWND).cast::<core::ffi::c_void>() as isize),
-        )
-        .ok()
-        .context("EnumWindows failed")?;
+            LPARAM((&mut state as *mut DesktopHostState).cast::<core::ffi::c_void>() as isize),
+        );
     }
 
-    if worker.is_invalid() {
-        Ok(progman)
+    if !state.wallpaper_host.is_invalid() {
+        Ok(state.wallpaper_host)
+    } else if !state.icons_host.is_invalid() {
+        Ok(state.icons_host)
     } else {
-        Ok(worker)
+        Ok(progman)
     }
 }

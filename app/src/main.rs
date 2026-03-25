@@ -3,12 +3,15 @@
 mod config;
 mod monitor;
 mod mpv;
+mod paths;
 mod picker;
 mod tray;
 mod wallpaper;
 
-use std::time::{Duration, Instant};
 use std::path::PathBuf;
+use std::fs::OpenOptions;
+use std::io::Write;
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use monitor::{PauseReason, PlaybackDirective};
@@ -17,6 +20,15 @@ use tracing::{info, warn};
 use wallpaper::{LoopFlow, WallpaperApp};
 
 fn main() -> Result<()> {
+    if let Err(error) = run() {
+        log_startup_error(&format!("{error:#}"));
+        return Err(error);
+    }
+
+    Ok(())
+}
+
+fn run() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -134,6 +146,23 @@ fn main() -> Result<()> {
     Ok(())
 }
 
+fn log_startup_error(message: &str) {
+    let Ok(dir) = config::project_dirs().map(|dirs| dirs.data_local_dir().join("logs")) else {
+        return;
+    };
+
+    if std::fs::create_dir_all(&dir).is_err() {
+        return;
+    }
+
+    let path = dir.join("startup.log");
+    let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) else {
+        return;
+    };
+
+    let _ = writeln!(file, "{message}");
+}
+
 fn default_video_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+    paths::app_root_dir().unwrap_or_else(|_| PathBuf::from("."))
 }

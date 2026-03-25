@@ -16,7 +16,7 @@ Lightweight Windows live wallpaper app built in Rust.
 - folder-driven playlist rotation from `PLAYLIST`
 - hour-based rotation intervals
 - pauses automatically for fullscreen apps
-- pauses automatically for watched apps like `valorant.exe`
+- pauses automatically for watched apps like `VALORANT-Win64-Shipping.exe`
 - resumes automatically when those conditions clear
 - runs as a no-console Windows app when built normally
 
@@ -47,10 +47,18 @@ Release build with `icon.ico` linked into the final executable:
 .\build-release.ps1
 ```
 
+Release package with the executable plus required runtime files:
+
+```powershell
+.\build-release-package.ps1
+```
+
 Output:
 
 ```text
 target\release\live-wall.exe
+dist\Live Wall v0.1.0
+dist\Live Wall v0.1.0-windows-x64.zip
 ```
 
 ## Config
@@ -65,13 +73,13 @@ Example:
   },
   "pause": {
     "poll_interval_ms": 1000,
-    "pause_on_fullscreen": true,
-    "watched_processes": [
-      {
-        "process_name": "valorant.exe",
-        "match_mode": "exact"
-      },
-      {
+      "pause_on_fullscreen": true,
+      "watched_processes": [
+        {
+        "process_name": "VALORANT-Win64-Shipping.exe",
+          "match_mode": "exact"
+        },
+        {
         "process_name": "obs64.exe",
         "match_mode": "exact"
       }
@@ -86,6 +94,42 @@ Notes:
 - playlist contents come from whatever supported video files are in [PLAYLIST](C:/Users/nolyn/live-wall/PLAYLIST)
 - supported video types are `.mp4`, `.mkv`, `.webm`, `.mov`
 - `match_mode` supports `exact` and `contains`
+- if your existing config still says `valorant.exe`, change it to `VALORANT-Win64-Shipping.exe`
+
+### Pause On Specific Processes
+
+Use `pause.watched_processes` to pause playback whenever one of the listed apps is running.
+
+Example:
+
+```json
+{
+  "pause": {
+    "poll_interval_ms": 1000,
+    "pause_on_fullscreen": true,
+    "watched_processes": [
+      {
+        "process_name": "VALORANT-Win64-Shipping.exe",
+        "match_mode": "exact"
+      },
+      {
+        "process_name": "obs64.exe",
+        "match_mode": "exact"
+      },
+      {
+        "process_name": "Discord",
+        "match_mode": "contains"
+      }
+    ]
+  }
+}
+```
+
+Notes:
+
+- use `exact` when you know the full executable name, like `VALORANT-Win64-Shipping.exe`
+- use `contains` when you want a broader match against the process name
+- playback resumes automatically when none of the watched processes are active
 
 ## Assets
 
@@ -96,6 +140,7 @@ Notes:
 
 ## Notes
 
-- local video playback currently expects the bundled `mpv` runtime folders to exist in the repo root
+- release builds should be shipped with `wallpaper.html`, `tray_icon.ico`, `icon.ico`, `PLAYLIST`, and the bundled `mpv` runtime folder next to the executable
+- local video playback expects the bundled `mpv` runtime folder to be present next to the executable
 - the tray uses `tray_icon.ico` first and falls back to `icon.ico`
 - the runtime config opens through your default editor from the tray
